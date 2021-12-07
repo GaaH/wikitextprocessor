@@ -10,6 +10,7 @@ import datetime
 import unittest
 from wikitextprocessor import Wtp
 from wikitextprocessor.common import preprocess_text, MAGIC_NOWIKI_CHAR
+from wikitextprocessor.dumpparser import WikiNamespace, WikiPage
 
 
 def phase1_to_ctx(pages):
@@ -18,8 +19,20 @@ def phase1_to_ctx(pages):
     for templates and "Module" for modules.  Title is the title of the
     page and text the content of the page."""
     ctx = Wtp()
-    for tag, title, text in pages:
-        ctx.add_page(tag, title, text)
+    for x in pages:
+        if isinstance(x, WikiPage):
+            page = x
+        else:
+            tag, title, text = x
+            if title.startswith("Template:"):
+                ns = WikiNamespace("Template", "10")
+            elif title.startswith("Module:"):
+                ns = WikiNamespace("Module", "828")
+            else:
+                ns = WikiNamespace("", "0")
+
+            page = WikiPage(title, text, tag, ns)
+        ctx.add_page(page)
     ctx.analyze_templates()
     return ctx
 
@@ -28,14 +41,15 @@ class WikiProcTests(unittest.TestCase):
 
     def scribunto(self, expected_ret, body, timeout=None):
         """This runs a very basic test of scribunto code."""
-        ctx = phase1_to_ctx([
-            ["Scribunto", "Module:testmod", r"""
+        text = r"""
 local export = {}
 function export.testfn(frame)
 """ + body + """
 end
 return export
-"""]])
+"""
+        page = WikiPage("Module:testmod", text, "Scribunto", WikiNamespace("Module", "829"))
+        ctx = phase1_to_ctx([page])
         ctx.start_page("Tt")
         ret = ctx.expand("{{#invoke:testmod|testfn}}", timeout=timeout)
         self.assertEqual(len(ctx.expand_stack), 1)
@@ -1483,7 +1497,8 @@ MORE
 
     def test_redirect1(self):
         ctx = phase1_to_ctx([
-            ["redirect", "Template:oldtemp", "Template:testtemp"],
+            WikiPage("Template:oldtemp", "Template:testtemp", "redirect", WikiNamespace("Template", "10"), redirect="Template:testtemp"),
+            # ["redirect", "Template:oldtemp", "Template:testtemp"],
             ["wikitext", "Template:testtemp", "a{{{1}}}b"],
         ])
         ctx.start_page("Tt")
@@ -2881,6 +2896,7 @@ return export
         # test for redirect that exists
         ctx = phase1_to_ctx([
             ["redirect", "Main:Foo", "Main:Bar"],
+            WikiPage("Main:Foo", "", "redirect", WikiNamespace("", "0"), redirect="Main:Bar"),
             ["Scribunto", "Module:testmod", """
             local export = {}
             function export.testfn(frame)
@@ -2965,7 +2981,8 @@ return export
     def test_mw_title51(self):
         # test for redirect target
         ctx = phase1_to_ctx([
-            ["redirect", "Main:Foo", "Main:Bar"],
+            # ["redirect", "Main:Foo", "Main:Bar"],
+            WikiPage("Main:Foo", "Main:Bar", "redirect", WikiNamespace("", "0"), redirect="Main:Bar"),
             ["Scribunto", "Module:testmod", """
             local export = {}
             function export.testfn(frame)
@@ -3134,7 +3151,8 @@ return export
         except FileNotFoundError:
             pass
         ctx = Wtp(cache_file=path)
-        ctx.add_page("wikitext", "Template:testmod", "test content")
+        page = WikiPage("Template:testmod", "test content", "wikitext", WikiNamespace("Template", "10"))
+        ctx.add_page(page)
         ctx.analyze_templates()
         ctx.start_page("Tt")
         ret = ctx.expand("a{{testmod}}b")
@@ -3158,14 +3176,16 @@ return export
         except FileNotFoundError:
             pass
         ctx = Wtp(cache_file=path)
-        ctx.add_page("wikitext", "Template:testmod", "test content")
+        page = WikiPage("Template:testmod", "test content", "wikitext", WikiNamespace("Template", "10"))
+        ctx.add_page(page)
         ctx.analyze_templates()
         ctx.start_page("Tt")
         ret = ctx.expand("a{{testmod}}b")
         self.assertEqual(ret, "atest contentb")
         # Now create a new context with the same cachefile but do not add page
         ctx = Wtp(cache_file=path)
-        ctx.add_page("wikitext", "Template:testmod", "test content 2")
+        page2 = WikiPage("Template:testmod", "test content 2", "wikitext", WikiNamespace("Template", "10"))
+        ctx.add_page(page2)
         ctx.analyze_templates()
         ctx.start_page("Tt")
         ret = ctx.expand("a{{testmod}}b")

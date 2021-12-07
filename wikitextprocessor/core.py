@@ -16,6 +16,8 @@ import collections
 import urllib.parse
 import html.entities
 import multiprocessing
+
+from wikitextprocessor.dumpparser import WikiPage
 from .parserfns import (PARSER_FUNCTIONS, call_parser_function, tag_fn)
 from .wikihtml import ALLOWED_HTML_TAGS
 from .luaexec import call_lua_sandbox
@@ -36,7 +38,7 @@ _global_ctx = None
 _global_page_handler = None
 _global_page_autoload = True
 
-def phase2_page_handler(dt):
+def phase2_page_handler(page):
     """Helper function for calling the Phase2 page handler (see
     reprocess()).  This is a global function in order to make this
     pickleable.  The implication is that process() and reprocess() are not
@@ -44,7 +46,7 @@ def phase2_page_handler(dt):
     recursively)"""
     ctx = _global_ctx
     autoload = _global_page_autoload
-    model, title = dt
+    title = page.title
     start_t = time.time()
 
     # XXX Enable this to debug why extraction hangs.  This writes the path
@@ -65,7 +67,7 @@ def phase2_page_handler(dt):
         else:
             data = None
         try:
-            ret = _global_page_handler(model, title, data)
+            ret = _global_page_handler(page)
             return True, title, start_t, ret
         except Exception as e:
             lst = traceback.format_exception(etype=type(e), value=e,
@@ -515,7 +517,7 @@ class Wtp(object):
         text = re.sub(r"(?is)<\s*(/\s*)?includeonly\s*(/\s*)?>", "", text)
         return text
 
-    def add_page(self, model, title, text, transient=False):
+    def add_page(self, page, transient=False):
         """Collects information about the page.  For templates and modules,
         this keeps the content in memory.  For other pages, this saves the
         content in a temporary file so that it can be accessed later.  There
@@ -530,18 +532,19 @@ class Wtp(object):
         this page will not be saved but will replace any saved page.  This can
         be used, for example, to add Lua code for data extraction, or for
         debugging Lua modules."""
-        assert isinstance(model, str)
-        assert isinstance(title, str)
-        assert isinstance(text, str)
+        assert isinstance(page.model, str)
+        assert isinstance(page.title, str)
+        assert isinstance(page.text, str)
         assert transient in (True, False)
 
         if transient:
-            self.transient_pages[title] = (title, model, text)
-            if (title.startswith("Template:") and
+            title = page.title
+            self.transient_pages[title] = page
+            if (page.ns.key == "10" and
                 not title.endswith("/documentation") and
                 not title.endswith("/testcases")):
                 name = self._canonicalize_template_name(title)
-                body = self._template_to_body(title, text)
+                body = self._template_to_body(title, page.text)
                 self.transient_templates[name] = body
             return
 
@@ -552,7 +555,7 @@ class Wtp(object):
             self._reset_pages()
 
         # Save the page in our temporary file and metadata in memory
-        rawtext = text.encode("utf-8")
+        rawtext = page.text.encode("utf-8")
         if self.buf_ofs + len(rawtext) > self.buf_size:
             bufview = memoryview(self.buf)[0: self.buf_ofs]
             self.tmp_file.write(bufview)
@@ -564,26 +567,26 @@ class Wtp(object):
         else:
             self.buf[self.buf_ofs: self.buf_ofs + len(rawtext)] = rawtext
         # XXX should we canonicalize title in page_contents
-        self.page_contents[title] = (title, model, ofs, len(rawtext))
-        self.page_seq.append((model, title))
+        self.page_contents[page.title] = (page.title, page.model, ofs, len(rawtext))
+        self.page_seq.append(page)
         if not self.quiet and len(self.page_seq) % 10000 == 0:
             print("  ... {} raw pages collected"
                   .format(len(self.page_seq)))
             sys.stdout.flush()
 
-        if model == "redirect":
-            self.redirects[title] = text
+        if page.redirect is not None:
+            self.redirects[page.title] = page.text
             return
-        if not title.startswith("Template:"):
+        if page.ns.key != "10":
             return
-        if title.endswith("/documentation"):
+        if page.title.endswith("/documentation"):
             return
-        if title.endswith("/testcases"):
+        if page.title.endswith("/testcases"):
             return
 
         # It is a template
-        name = self._canonicalize_template_name(title)
-        body = self._template_to_body(title, text)
+        name = self._canonicalize_template_name(page.title)
+        body = self._template_to_body(page.title, page.text)
         assert isinstance(body, str)
         self.templates[name] = body
 
@@ -1291,7 +1294,7 @@ class Wtp(object):
         assert isinstance(path, str)
         assert callable(page_handler)
         # Process the dump and copy it to temporary file (Phase 1)
-        process_dump(self, path, page_handler)
+        process_dump(self, path)
         if phase1_only:
             return []
 
@@ -1321,8 +1324,10 @@ class Wtp(object):
         if self.num_threads == 1:
             # Single-threaded version (without subprocessing).  This is
             # primarily intended for debugging.
-            for model, title in self.page_seq:
-                success, ret_title, t, ret = phase2_page_handler((model, title))
+            for page in self.page_seq:
+                model = page.model
+                title = page.title
+                success, ret_title, t, ret = phase2_page_handler(page)
                 assert ret_title == title
                 if not success:
                     print(ret)  # Print error in parent process - do not remove

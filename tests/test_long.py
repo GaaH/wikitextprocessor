@@ -3,11 +3,15 @@ import unittest
 import collections
 from wikitextprocessor import Wtp
 
-def page_cb(model, title, text):
+def page_cb(page):
+    model = page.model
+    title = page.title
+    text = page.text
+    redirect = page.redirect
     # Note: this may be called in a separate thread and thus cannot
     # update external variables
     assert model in ("wikitext", "redirect", "Scribunto") # in this data
-    if model == "redirect":
+    if redirect is not None:
         return title, text
     return title, None
 
